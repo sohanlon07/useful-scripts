@@ -4,7 +4,7 @@
 # Removes extra data from file name; for example: 
 # Batman - The Brave and the Bold 012 (2024) (Webrip) (The Last Kryptonian-DCP).cbr becomes
 # Batman - The Brave and the Bold 012.cbr
-# Should be used only on backups of comics you have purchased.
+# Should be used only on backups of comics you have purchased
 
 # Loop through all files in the current directory
 for filename in *; do
@@ -17,6 +17,9 @@ for filename in *; do
     
     # Remove everything from the first bracket ([) to the end
     new_name="${base_name%%(*)}"
+    
+    # Remove trailing spaces from the new name
+    new_name="${new_name%% }"  # Double expansion for removing trailing spaces
     
     # Rebuild the filename with the new name and extension, removing space
     new_filename="$new_name.$extension"
