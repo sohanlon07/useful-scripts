@@ -2,8 +2,8 @@
 
 # Renames comic files downloaded from a specifc source that use a specific format.
 # Removes extra data from file name; for example: 
-# Batman - The Brave and the Bold 012 (2024) (Webrip) (The Last Kryptonian-DCP).cbr becomes
-# Batman - The Brave and the Bold 012.cbr
+# Deadpool-Wolverine 004 (2025) (Digital) (Kileko-Empire).cbz becomes
+# Deadpool-Wolverine 004 (2025).cbz
 # Should be used only on backups of comics you have purchased
 
 # Loop through all .cbr and .cbz files in the current directory
@@ -15,8 +15,13 @@ for filename in *.cbr *.cbz; do
     # Extract the extension
     extension="${filename##*.}"
     
-    # Remove everything from the first bracket ([) to the end
-    new_name="${base_name%%(*)}"
+    # If the filename has a year in parenthesis, like (2024), keep it and remove trailing info
+    if [[ "$base_name" =~ (.*[[:space:]]\([0-9]{4}\)) ]]; then
+      new_name="${BASH_REMATCH[1]}"
+    else
+      # Otherwise, remove everything from the first parenthesis
+      new_name="${base_name%% (*}"
+    fi
     
     # Remove trailing spaces from the new name
     new_name="${new_name%% }"  # Double expansion for removing trailing spaces
