@@ -6,8 +6,8 @@
 # Batman - The Brave and the Bold 012.cbr
 # Should be used only on backups of comics you have purchased
 
-# Loop through all files in the current directory
-for filename in *; do
+# Loop through all .cbr and .cbz files in the current directory
+for filename in *.cbr *.cbz; do
   # Check if the filename contains a dot (likely indicating an extension)
   if [[ $filename =~ \. ]]; then
     # Extract the filename without the extension
