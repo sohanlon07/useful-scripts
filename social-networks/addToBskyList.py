@@ -2,7 +2,7 @@
 """
 Add Bluesky profiles to a list, with optional follow.
 
-Two modes — select via env var BSKY_MODE:
+Three modes — select via env var BSKY_MODE:
 
   csv  (default)
        Read profile URLs from a CSV file passed as a positional argument,
@@ -19,15 +19,23 @@ Two modes — select via env var BSKY_MODE:
        follow each account if not already followed, and add to your list.
 
        export BSKY_MODE=list
-       export BSKY_HANDLE="you.bsky.social"
-       export BSKY_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"
-       export BSKY_LIST_URL="https://bsky.app/profile/you.bsky.social/lists/abc123"
        export BSKY_SOURCE_LIST_URL="https://bsky.app/profile/someone.bsky.social/lists/xyz789"
-       python bsky_add_to_list.py        # no positional arg needed in list mode
+       python bsky_add_to_list.py
 
-CSV format (one column, header row auto-skipped):
-    https://bsky.app/profile/alice.bsky.social
-    https://bsky.app/profile/bob.bsky.social
+  starter
+       Read all members from a starter pack, follow each if not already
+       followed, and add to your list.
+       Starter pack URLs look like:
+         https://bsky.app/starter-pack/someone.bsky.social/abc123
+       or the short form:
+         https://bsky.app/starter-pack-short-link/abc123
+
+       export BSKY_MODE=starter
+       export BSKY_SOURCE_LIST_URL="https://bsky.app/starter-pack/someone.bsky.social/abc123"
+       python bsky_add_to_list.py
+
+  Common required env vars (all modes):
+       BSKY_HANDLE, BSKY_APP_PASSWORD, BSKY_LIST_URL (your destination list)
 """
 
 import csv
@@ -52,7 +60,7 @@ def create_session(handle: str, app_password: str) -> dict:
         timeout=15,
     )
     resp.raise_for_status()
-    return resp.json()  # contains accessJwt, did, handle
+    return resp.json()
 
 
 # ── DID / handle resolution ───────────────────────────────────────────────────
@@ -101,12 +109,68 @@ def list_url_to_at_uri(list_url: str, token: str) -> str:
     return f"at://{did}/app.bsky.graph.list/{rkey}"
 
 
+# ── Starter pack -> list AT URI ───────────────────────────────────────────────
+
+def starter_pack_url_to_list_at_uri(sp_url: str, token: str) -> str:
+    """
+    Resolve a starter pack URL to the AT URI of its embedded list.
+
+    Supported URL forms:
+      https://bsky.app/starter-pack/handle.bsky.social/rkey
+      https://bsky.app/starter-pack-short-link/CODE   (resolves via getStarterPack)
+
+    A starter pack record (app.bsky.graph.starterpack) contains a `list` field
+    which is the AT URI of the associated app.bsky.graph.list.
+    """
+    sp_url = sp_url.strip().rstrip("/")
+
+    if "/starter-pack-short-link/" in sp_url:
+        # Short links must be resolved via getStarterPack with the short-link code
+        code = sp_url.split("/starter-pack-short-link/")[-1].split("/")[0]
+        resp = requests.get(
+            f"{BSKY_API}/app.bsky.graph.getStarterPack",
+            params={"starterPack": f"https://bsky.app/starter-pack-short-link/{code}"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    elif "/starter-pack/" in sp_url:
+        # Full form: extract handle + rkey, build AT URI, then fetch
+        tail = sp_url.split("/starter-pack/")[-1]
+        parts = tail.split("/")
+        if len(parts) < 2:
+            raise ValueError(f"Cannot parse starter pack URL: {sp_url}")
+        handle, rkey = parts[0], parts[1]
+        did = resolve_handle(handle, token) if not handle.startswith("did:") else handle
+        sp_at_uri = f"at://{did}/app.bsky.graph.starterpack/{rkey}"
+        resp = requests.get(
+            f"{BSKY_API}/app.bsky.graph.getStarterPack",
+            params={"starterPack": sp_at_uri},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    else:
+        raise ValueError(f"URL does not appear to be a starter pack: {sp_url}")
+
+    resp.raise_for_status()
+    data = resp.json()
+
+    # The API returns { starterPack: { record: { list: "at://..." }, ... } }
+    list_at_uri = (
+        data.get("starterPack", {})
+            .get("record", {})
+            .get("list")
+    )
+    if not list_at_uri:
+        raise ValueError(f"Starter pack response contained no list URI: {data}")
+
+    log.info("Starter pack list AT URI: %s", list_at_uri)
+    return list_at_uri
+
+
 # ── Source list fetching ──────────────────────────────────────────────────────
 
 def fetch_list_members(list_at_uri: str, token: str) -> list[str]:
-    """
-    Page through app.bsky.graph.getList and return all member DIDs.
-    """
+    """Page through app.bsky.graph.getList and return all member DIDs."""
     dids = []
     cursor = None
 
@@ -150,7 +214,6 @@ def is_following(actor_did: str, token: str) -> bool:
     )
     resp.raise_for_status()
     viewer = resp.json().get("viewer", {})
-    # 'following' is set to the follow record AT URI if we follow them
     return bool(viewer.get("following"))
 
 
@@ -264,8 +327,8 @@ def process_dids(dids: list[str], list_at_uri: str, author_did: str, token: str)
 def main():
     mode = os.environ.get("BSKY_MODE", "csv").strip().lower()
 
-    if mode not in ("csv", "list"):
-        sys.exit("BSKY_MODE must be 'csv' or 'list'")
+    if mode not in ("csv", "list", "starter"):
+        sys.exit("BSKY_MODE must be 'csv', 'list', or 'starter'")
 
     handle       = os.environ.get("BSKY_HANDLE")
     app_password = os.environ.get("BSKY_APP_PASSWORD")
@@ -276,7 +339,7 @@ def main():
         "BSKY_APP_PASSWORD": app_password,
         "BSKY_LIST_URL": list_url,
     }
-    if mode == "list":
+    if mode in ("list", "starter"):
         required["BSKY_SOURCE_LIST_URL"] = os.environ.get("BSKY_SOURCE_LIST_URL")
 
     missing = [k for k, v in required.items() if not v]
@@ -302,13 +365,12 @@ def main():
         profile_urls = load_profile_urls(csv_path)
         log.info("Loaded %d profile(s) from %s", len(profile_urls), csv_path)
 
-        # Resolve handles/URLs -> DIDs
         dids = []
         for url in profile_urls:
             raw = profile_url_to_handle(url)
             dids.append(raw if raw.startswith("did:") else resolve_handle(raw, token))
 
-    else:  # mode == "list"
+    elif mode == "list":
         source_list_url = os.environ.get("BSKY_SOURCE_LIST_URL")
         log.info("Resolving source list ...")
         source_list_at_uri = list_url_to_at_uri(source_list_url, token)
@@ -317,6 +379,15 @@ def main():
         log.info("Fetching source list members ...")
         dids = fetch_list_members(source_list_at_uri, token)
         log.info("Found %d member(s) in source list", len(dids))
+
+    else:  # mode == "starter"
+        source_url = os.environ.get("BSKY_SOURCE_LIST_URL")
+        log.info("Resolving starter pack ...")
+        sp_list_at_uri = starter_pack_url_to_list_at_uri(source_url, token)
+
+        log.info("Fetching starter pack members ...")
+        dids = fetch_list_members(sp_list_at_uri, token)
+        log.info("Found %d member(s) in starter pack", len(dids))
 
     process_dids(dids, dest_list_at_uri, author_did, token)
 
